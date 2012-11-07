@@ -5,6 +5,12 @@
 # Author  : Thobias Salazar Trevisan (thobias at thobias.org)
 #
 # Changelog (DD/MM/YYYY):
+# 07/11/2012 - version 2.2
+#              added support for TSM 6 for db and log checks
+#              dbbkp - replaced sed by egrep. AIX sed does not have OR oper
+# 11/04/2009 - version 2.1
+#              added falseprivate check
+#              fixed bug drmvol
 # 28/11/2008 - version 2.0
 #              the source code was rewritten.
 #              there were changes on the command line options, so version 2.0
@@ -36,9 +42,14 @@
 #           warning..: 85
 #           critical.: 90
 #
+#        Usage..: tsmmonitor db [options] [warning] [critical]
+#
+#                 -v6     check database utilization for TSM version 6
+#
 #        Usage..: tsmmonitor db [warning] [critical]
 #        Example: tsmmonitor db
 #                 tsmmonitor db 80 95
+#                 tsmmonitor db -v6 80 90
 #
 #   The status returned from db check depends on the warning and critical
 #   threshold values. These values can be customized using command line
@@ -109,6 +120,7 @@
 #   Example:
 #       tsmmonitor db --help
 #       tsmmonitor db
+#       tsmmonitor db -v6
 #       tsmmonitor -m='user1@somewhere.com user2@somewhere.com' db
 #       tsmmonitor --servername=tsmsrv01 db
 #       tsmmonitor --servername=tsmsrv02 db 85 95
@@ -200,7 +212,7 @@ SHOW_CHECK_SOURCE=0 # do not edit here, please use --source
 ################################
 #
 URL='http://thobias.org/tsm'
-VERSION='2.0'
+VERSION='2.2'
 
 #####################################################################
 ########## default check threshold                                  #
@@ -278,6 +290,10 @@ LOGVOL_CRITICAL=2
 # Check number of schedules not completed
 SCHED_WARNING=1
 SCHED_CRITICAL=3
+# check for false private tapes
+FALSEPRIV_WARNING=1
+FALSEPRIV_CRITICAL=3
+
 
 ##############################################################################
 
@@ -314,6 +330,7 @@ _tsmmonitor_tool ()
 				Example:
 				    tsmmonitor db --help
 				    tsmmonitor db
+				    tsmmonitor db -v6
 				    tsmmonitor -m='user1@somewhere.com user2@somewhere.com' db
 				    tsmmonitor --servername=tsmsrv01 db
 				    tsmmonitor --servername=tsmsrv02 db 85 95
@@ -569,9 +586,13 @@ help ()
 #    warning..: DB_WARNING
 #    critical.: DB_CRITICAL
 #
-# Usage..: tsmmonitor db [warning] [critical]
+# Usage..: tsmmonitor db [options] [warning] [critical]
+#
+#	-v6	check database utilization for TSM version 6
+#
 # Example: tsmmonitor db
 #          tsmmonitor db 80 95
+#          tsmmonitor db -v6 80 90
 # ----------------------------------------------------------------------------
 db ()
 {
@@ -580,6 +601,15 @@ db ()
 	local tsm_output pct_utl
 	local status="OK"
 	local sql="SELECT pct_utilized FROM db"
+
+	# options parser
+	case $1 in
+		-v6 )
+			sql="SELECT CAST(SUM(100-(free_space_mb*100) / tot_file_system_mb) \
+AS DECIMAL(3,1)) AS PCT_UTILIZED FROM db"
+			shift
+		;;
+	esac
 
 	# Test if the parameters are numbers
 	if ! _tsmmonitor_tool is_number "$1" "$2"
@@ -609,9 +639,13 @@ db ()
 #    warning..: LOG_WARNING
 #    critical.: LOG_CRITICAL
 #
-# Usage..: tsmmonitor log [warning] [critical]
+# Usage..: tsmmonitor log [options] [warning] [critical]
+#
+#	-v6	check active log utilization for TSM version 6
+#
 # Example: tsmmonitor log
 #          tsmmonitor log 80 95
+#          tsmmonitor log -v6 70 80
 # ----------------------------------------------------------------------------
 log ()
 {
@@ -620,6 +654,15 @@ log ()
 	local tsm_output pct_utl
 	local status="OK"
 	local sql="SELECT pct_utilized FROM log"
+
+	# options parser
+	case $1 in
+		-v6 )
+			sql="SELECT CAST(SUM(used_space_mb *100 / total_space_MB) AS \
+DECIMAL(3,1)) AS MAX_PCT_UTILIZED FROM log"
+			shift
+		;;
+	esac
 
 	# Test if the parameters are numbers
 	if ! _tsmmonitor_tool is_number "$1" "$2"
@@ -1284,7 +1327,7 @@ dbbkp ()
 	local hours='25'
 	local status="OK"
 	local sql="SELECT count(*) FROM volhistory WHERE "
-	local opt_type='F\|S\|I\|F,S\|F,I\|S,F\|S,I\|I,F\|I,S\|F,S,I\|F,I,S\|S,F,I\|S,I,F\|I,F,S\|I,S,F'
+	local opt_type='F|S|I|F,S|F,I|S,F|S,I|I,F|I,S|F,S,I|F,I,S|S,F,I|S,I,F|I,F,S|I,S,F'
 
 	# parsing options
 	while [ "$1" ]
@@ -1306,7 +1349,7 @@ dbbkp ()
 	fi
 	
 	# is the type of db backup valid?
-	if [ "$(echo $type | sed "s/^$opt_type//")" ]
+	if [ "$(echo $type | egrep -v "^$opt_type")" ]
 	then
 		echo "Error: tsmmonitor dbbkp: invalid db type '$type'"
 		exit 3
@@ -1744,6 +1787,7 @@ drmvol ()
 			-s=* | --state=*   ) state="${1#*=}"   ;;
 			-l=* | --library=* ) library="${1#*=}" ;;
 			-i   | --invert    ) type_match='<>'   ;;
+			*                  ) break             ;;
 		esac
 		shift
 	done
@@ -1869,6 +1913,44 @@ lic ()
 	fi
 }
 
+# ----------------------------------------------------------------------------
+# check false private tapes
+#
+# The default percentages are:
+#    warning..: FALSEPRIV_WARNING
+#    critical.: FALSEPRIV_CRITICAL
+#
+# Usage..: tsmmonitor falseprivate [warning] [critical]
+# Example: tsmmonitor falseprivate
+#          tsmmonitor falseprivate 3 5
+# ----------------------------------------------------------------------------
+falseprivate ()
+{
+	[ "$1" = "--help" -o "$1" = "-h" ] && { _ShowHelp $0 falseprivate; return; }
+
+	local tsm_output num
+	local status="OK"
+	local sql="select count(*) from libvolumes where status='Private' and \
+	last_use is null and volume_name not in (select volume_name from volumes )"
+
+	# Test if the parameters are numbers
+	if ! _tsmmonitor_tool is_number "$1" "$2"
+	then
+		echo "Error: tsmmonitor falseprivate: invalid option -- '$1' or '$2'"
+		exit 3
+	fi
+
+	# Run the select statement
+	tsm_output="$(_tsmmonitor_tool run_select falseprivate "$sql")" || exit 3
+
+	num="$(echo "$tsm_output" | sed -n '/^[0-9][0-9]*$/p')"
+
+	# find out the current check status (ok/warning/critical)
+	[ "$num" -ge "${1:-$FALSEPRIV_WARNING}"  ] && status="Warning"
+	[ "$num" -ge "${2:-$FALSEPRIV_CRITICAL}" ] && status="Critical"
+
+	_tsmmonitor_tool myecho falseprivate "Num false privates $num, $status"
+}
 
 ##############################################################################
 ################################### Main #####################################
